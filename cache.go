@@ -1,36 +1,75 @@
 package memoryCache
 
 import (
-	"fmt"
 	"sync"
+	"time"
 )
 
-type Caches struct {
-	mu       sync.Mutex
-	innerMap map[string]int
+type value struct {
+	value interface{}
+	ttl   *time.Time
 }
 
-func New() *Caches {
-	return &Caches{innerMap: make(map[string]int)}
+type Cache struct {
+	ticker *time.Ticker
+	data   sync.Map
+	ttl    time.Duration
 }
 
-func (c *Caches) Set(key string, value int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.innerMap[key] = value
-}
-
-func (c *Caches) Get(key string) (int, error) {
-	val, ok := c.innerMap[key]
-
-	if ok {
-		return val, nil
+func New(ttl time.Duration) *Cache {
+	db := &Cache{
+		ticker: time.NewTicker(time.Second * 1),
+		data:   sync.Map{},
+		ttl:    ttl,
 	}
-	return 0, fmt.Errorf("not found key")
+
+	go db.backgroundCacheCleaner()
+
+	return db
 }
 
-func (c *Caches) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.innerMap, key)
+// background goroutine to clean up expired keys in the cache
+func (db *Cache) backgroundCacheCleaner() {
+	for {
+		<-db.ticker.C
+		db.data.Range(func(key, v interface{}) bool {
+			vv, ok := v.(*value)
+			if !ok {
+				return true
+			}
+
+			if vv.ttl == nil {
+				return true
+			}
+
+			if time.Now().After(*vv.ttl) {
+				db.data.Delete(key)
+			}
+
+			return true
+		})
+	}
+}
+
+func (db *Cache) Set(key interface{}, v interface{}) {
+	t := time.Now().Add(db.ttl)
+	db.data.Store(key, &value{v, &t})
+}
+
+func (db *Cache) Get(key interface{}) (result interface{}, ok bool) {
+	load, ok := db.data.Load(key)
+	if !ok {
+		return nil, false
+	}
+
+	vv, ok := load.(*value)
+	if !ok {
+		return nil, false
+	}
+
+	return vv.value, true
+}
+
+func (db *Cache) Delete(key interface{}) {
+	db.data.Delete(key)
 }
